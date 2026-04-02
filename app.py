@@ -9,7 +9,7 @@ import hashlib
 # إعداد الصفحة
 st.set_page_config(page_title="نظام إدارة الصيادلة", layout="wide")
 
-# دالة لتوليد هاش لكلمة المرور (للتخزين الآمن)
+# دالة لتوليد هاش لكلمة المرور
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
@@ -160,7 +160,7 @@ if not st.session_state.logged_in:
         if user:
             st.session_state.logged_in = True
             st.session_state.user = user
-            st.experimental_rerun()
+            st.rerun()  # تم التعديل: st.experimental_rerun() -> st.rerun()
         else:
             st.error("اسم المستخدم أو كلمة المرور غير صحيحة")
     st.stop()
@@ -176,7 +176,7 @@ with st.sidebar:
     if st.button("تسجيل خروج"):
         st.session_state.logged_in = False
         st.session_state.user = None
-        st.experimental_rerun()
+        st.rerun()  # تم التعديل
 
     if user['is_admin']:
         st.subheader("إدارة الموظفين")
@@ -192,7 +192,7 @@ with st.sidebar:
             if st.button("إضافة"):
                 if add_employee(new_username, new_password, new_name, new_rate):
                     st.success("تمت الإضافة")
-                    st.experimental_rerun()
+                    st.rerun()
                 else:
                     st.error("اسم المستخدم موجود بالفعل")
         
@@ -202,14 +202,14 @@ with st.sidebar:
             if st.button("تحديث"):
                 update_monthly_rate(emp_id, new_rate)
                 st.success("تم التحديث")
-                st.experimental_rerun()
+                st.rerun()
         
         with st.expander("حذف موظف"):
             emp_id = st.number_input("معرف الموظف للحذف", min_value=1, step=1)
             if st.button("حذف"):
                 delete_employee(emp_id)
                 st.success("تم الحذف")
-                st.experimental_rerun()
+                st.rerun()
 
 # محتوى التطبيق الأساسي
 st.title("نظام الحضور وحساب الراتب")
@@ -274,7 +274,6 @@ df = pd.DataFrame(days_list)
 
 # عرض الجدول القابل للتعديل (للمدير) أو للقراءة فقط (للموظف)
 if user['is_admin']:
-    # المدير يمكنه التعديل
     edited_df = st.data_editor(
         df,
         column_config={
@@ -297,15 +296,12 @@ if user['is_admin']:
         else:
             edited_df.at[idx, "صافي (ساعات)"] = 0.0
     # حفظ البيانات بعد كل تعديل (نقوم بحذف ثم إدراج جميع أيام الشهر)
-    # حذف بيانات الشهر الحالي للموظف
     delete_month_attendance(selected_employee_id, year, month)
-    # حفظ الصفوف المعدلة
     for _, row in edited_df.iterrows():
         save_attendance(selected_employee_id, year, month, row["اليوم"],
                         row["وقت الحضور"], row["وقت الانصراف"], row["صافي (ساعات)"], row["الملاحظات"])
     st.success("تم حفظ التغييرات")
 else:
-    # الموظف يرى فقط (لا يمكنه التعديل)
     st.dataframe(df, use_container_width=True)
     st.info("هذا جدول الحضور الخاص بك. للاستفسار، تواصل مع المدير.")
 
@@ -339,7 +335,7 @@ st.markdown(f"""
 - الراتب = {considered_hours:.2f} × {actual_hour_rate:.2f} = {salary:.2f} جنيه
 """)
 
-# جدول ملون (للمدير أو للموظف)
+# جدول ملون
 st.subheader("📊 ملخص الجدول (مع تلوين الأيام)")
 def color_rows(row):
     notes = str(row["الملاحظات"]) if pd.notna(row["الملاحظات"]) else ""
@@ -355,13 +351,12 @@ st.dataframe(styled_summary, use_container_width=True)
 
 # تصدير
 st.divider()
-if user['is_admin'] or True:  # الكل يمكنه التصدير
-    csv = df.to_csv(index=False).encode('utf-8-sig')
-    st.download_button("📥 تحميل كـ CSV", data=csv,
-                       file_name=f"attendance_{selected_employee_id}_{year}_{month}.csv", mime="text/csv")
-    output = io.BytesIO()
-    with pd.ExcelWriter(output, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name="الحضور")
-    st.download_button("📊 تحميل كـ Excel", data=output.getvalue(),
-                       file_name=f"attendance_{selected_employee_id}_{year}_{month}.xlsx",
-                       mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+csv = df.to_csv(index=False).encode('utf-8-sig')
+st.download_button("📥 تحميل كـ CSV", data=csv,
+                   file_name=f"attendance_{selected_employee_id}_{year}_{month}.csv", mime="text/csv")
+output = io.BytesIO()
+with pd.ExcelWriter(output, engine='openpyxl') as writer:
+    df.to_excel(writer, index=False, sheet_name="الحضور")
+st.download_button("📊 تحميل كـ Excel", data=output.getvalue(),
+                   file_name=f"attendance_{selected_employee_id}_{year}_{month}.xlsx",
+                   mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
