@@ -15,7 +15,6 @@ def generate_time_options():
         for minute in [0, 15, 30, 45]:
             for ampm in ['AM', 'PM']:
                 options.append(f"{hour:02d}:{minute:02d} {ampm}")
-    # ترتيب زمني صحيح
     def time_key(t):
         h = int(t.split(':')[0])
         m = int(t.split(':')[1].split()[0])
@@ -48,7 +47,6 @@ def convert_12h_to_24h(time_str):
         return None
 
 def calculate_net_hours(start_12h, end_12h):
-    """تحسب الفرق بين وقتين، تسمح بتجاوز منتصف الليل"""
     if not start_12h or not end_12h or start_12h == "" or end_12h == "":
         return 0.0
     start_h = convert_12h_to_24h(start_12h)
@@ -60,13 +58,14 @@ def calculate_net_hours(start_12h, end_12h):
         diff += 24
     return round(diff, 2)
 
-# ------------------- دوال قاعدة البيانات (معدلة لدعم فترتين) -------------------
+# ------------------- دوال قاعدة البيانات مع الترحيل -------------------
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def init_db():
     conn = sqlite3.connect('pharmacy.db')
     c = conn.cursor()
+    
     # جدول الموظفين
     c.execute('''CREATE TABLE IF NOT EXISTS employees
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -75,7 +74,8 @@ def init_db():
                   name TEXT,
                   monthly_rate REAL,
                   is_admin INTEGER)''')
-    # جدول الحضور مع فترتين
+    
+    # جدول الحضور (إنشاء إذا لم يوجد)
     c.execute('''CREATE TABLE IF NOT EXISTS attendance
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   employee_id INTEGER,
@@ -91,11 +91,35 @@ def init_db():
                   net_hours_total REAL,
                   notes TEXT,
                   FOREIGN KEY(employee_id) REFERENCES employees(id))''')
-    # إضافة مدير افتراضي
+    
+    # الترحيل: إضافة الأعمدة الجديدة إذا كانت مفقودة (للتوافق مع الإصدارات القديمة)
+    # الحصول على قائمة الأعمدة الحالية
+    c.execute("PRAGMA table_info(attendance)")
+    columns = [col[1] for col in c.fetchall()]
+    
+    if 'check_in1' not in columns:
+        c.execute("ALTER TABLE attendance ADD COLUMN check_in1 TEXT")
+    if 'check_out1' not in columns:
+        c.execute("ALTER TABLE attendance ADD COLUMN check_out1 TEXT")
+    if 'net_hours1' not in columns:
+        c.execute("ALTER TABLE attendance ADD COLUMN net_hours1 REAL")
+    if 'check_in2' not in columns:
+        c.execute("ALTER TABLE attendance ADD COLUMN check_in2 TEXT")
+    if 'check_out2' not in columns:
+        c.execute("ALTER TABLE attendance ADD COLUMN check_out2 TEXT")
+    if 'net_hours2' not in columns:
+        c.execute("ALTER TABLE attendance ADD COLUMN net_hours2 REAL")
+    if 'net_hours_total' not in columns:
+        c.execute("ALTER TABLE attendance ADD COLUMN net_hours_total REAL")
+    if 'notes' not in columns:
+        c.execute("ALTER TABLE attendance ADD COLUMN notes TEXT")
+    
+    # إضافة مدير افتراضي إذا لم يوجد
     admin_exists = c.execute("SELECT * FROM employees WHERE username='admin'").fetchone()
     if not admin_exists:
         c.execute("INSERT INTO employees (username, password, name, monthly_rate, is_admin) VALUES (?,?,?,?,?)",
                   ('admin', hash_password('admin123'), 'صاحب الصيدلية', 750.0, 1))
+    
     conn.commit()
     conn.close()
 
@@ -117,17 +141,23 @@ def get_workdays(year, month):
         for day in week:
             if day != 0:
                 date = datetime(year, month, day)
-                if date.weekday() != 4:  # الجمعة إجازة
+                if date.weekday() != 4:
                     workdays.append(date)
     return workdays
 
 def get_attendance(employee_id, year, month):
     conn = sqlite3.connect('pharmacy.db')
+    # استخدام COALESCE للتعامل مع القيم NULL
     df = pd.read_sql_query("""
         SELECT day, 
-               check_in1, check_out1, net_hours1,
-               check_in2, check_out2, net_hours2, net_hours_total,
-               notes
+               COALESCE(check_in1, '') as check_in1,
+               COALESCE(check_out1, '') as check_out1,
+               COALESCE(net_hours1, 0) as net_hours1,
+               COALESCE(check_in2, '') as check_in2,
+               COALESCE(check_out2, '') as check_out2,
+               COALESCE(net_hours2, 0) as net_hours2,
+               COALESCE(net_hours_total, 0) as net_hours_total,
+               COALESCE(notes, '') as notes
         FROM attendance 
         WHERE employee_id=? AND year=? AND month=? 
         ORDER BY day
