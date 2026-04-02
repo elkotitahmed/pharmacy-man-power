@@ -8,11 +8,11 @@ import hashlib
 
 st.set_page_config(page_title="نظام إدارة الصيادلة", layout="wide")
 
-# ------------------- دوال التوقيت بصيغة 12 ساعة -------------------
+# ------------------- دوال التوقيت بصيغة 12 ساعة (بربع ساعة) -------------------
 def generate_time_options():
     options = []
     for hour in range(1, 13):
-        for minute in [0]:  # يمكن إضافة 30 للدقة نصف ساعة
+        for minute in [0, 15, 30, 45]:
             for ampm in ['AM', 'PM']:
                 options.append(f"{hour:02d}:{minute:02d} {ampm}")
     # ترتيب زمني صحيح
@@ -30,7 +30,7 @@ def generate_time_options():
 TIME_OPTIONS = generate_time_options()
 
 def convert_12h_to_24h(time_str):
-    if not time_str:
+    if not time_str or time_str == "":
         return None
     try:
         parts = time_str.split()
@@ -48,7 +48,8 @@ def convert_12h_to_24h(time_str):
         return None
 
 def calculate_net_hours(start_12h, end_12h):
-    if not start_12h or not end_12h:
+    """تحسب الفرق بين وقتين، تسمح بتجاوز منتصف الليل"""
+    if not start_12h or not end_12h or start_12h == "" or end_12h == "":
         return 0.0
     start_h = convert_12h_to_24h(start_12h)
     end_h = convert_12h_to_24h(end_12h)
@@ -59,13 +60,14 @@ def calculate_net_hours(start_12h, end_12h):
         diff += 24
     return round(diff, 2)
 
-# ------------------- دوال قاعدة البيانات -------------------
+# ------------------- دوال قاعدة البيانات (معدلة لدعم فترتين) -------------------
 def hash_password(password):
     return hashlib.sha256(password.encode()).hexdigest()
 
 def init_db():
     conn = sqlite3.connect('pharmacy.db')
     c = conn.cursor()
+    # جدول الموظفين
     c.execute('''CREATE TABLE IF NOT EXISTS employees
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   username TEXT UNIQUE,
@@ -73,17 +75,23 @@ def init_db():
                   name TEXT,
                   monthly_rate REAL,
                   is_admin INTEGER)''')
+    # جدول الحضور مع فترتين
     c.execute('''CREATE TABLE IF NOT EXISTS attendance
                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
                   employee_id INTEGER,
                   year INTEGER,
                   month INTEGER,
                   day INTEGER,
-                  check_in TEXT,
-                  check_out TEXT,
-                  net_hours REAL,
+                  check_in1 TEXT,
+                  check_out1 TEXT,
+                  net_hours1 REAL,
+                  check_in2 TEXT,
+                  check_out2 TEXT,
+                  net_hours2 REAL,
+                  net_hours_total REAL,
                   notes TEXT,
                   FOREIGN KEY(employee_id) REFERENCES employees(id))''')
+    # إضافة مدير افتراضي
     admin_exists = c.execute("SELECT * FROM employees WHERE username='admin'").fetchone()
     if not admin_exists:
         c.execute("INSERT INTO employees (username, password, name, monthly_rate, is_admin) VALUES (?,?,?,?,?)",
@@ -109,23 +117,43 @@ def get_workdays(year, month):
         for day in week:
             if day != 0:
                 date = datetime(year, month, day)
-                if date.weekday() != 4:
+                if date.weekday() != 4:  # الجمعة إجازة
                     workdays.append(date)
     return workdays
 
 def get_attendance(employee_id, year, month):
     conn = sqlite3.connect('pharmacy.db')
-    df = pd.read_sql_query("SELECT day, check_in, check_out, net_hours, notes FROM attendance WHERE employee_id=? AND year=? AND month=? ORDER BY day",
-                           conn, params=(employee_id, year, month))
+    df = pd.read_sql_query("""
+        SELECT day, 
+               check_in1, check_out1, net_hours1,
+               check_in2, check_out2, net_hours2, net_hours_total,
+               notes
+        FROM attendance 
+        WHERE employee_id=? AND year=? AND month=? 
+        ORDER BY day
+    """, conn, params=(employee_id, year, month))
     conn.close()
     return df
 
-def save_attendance(employee_id, year, month, day, check_in, check_out, net_hours, notes):
+def save_attendance(employee_id, year, month, day, 
+                    check_in1, check_out1, net_hours1,
+                    check_in2, check_out2, net_hours2, net_hours_total,
+                    notes):
     conn = sqlite3.connect('pharmacy.db')
     c = conn.cursor()
-    c.execute("DELETE FROM attendance WHERE employee_id=? AND year=? AND month=? AND day=?", (employee_id, year, month, day))
-    c.execute("INSERT INTO attendance (employee_id, year, month, day, check_in, check_out, net_hours, notes) VALUES (?,?,?,?,?,?,?,?)",
-              (employee_id, year, month, day, check_in, check_out, net_hours, notes))
+    c.execute("DELETE FROM attendance WHERE employee_id=? AND year=? AND month=? AND day=?", 
+              (employee_id, year, month, day))
+    c.execute("""
+        INSERT INTO attendance 
+        (employee_id, year, month, day, 
+         check_in1, check_out1, net_hours1,
+         check_in2, check_out2, net_hours2, net_hours_total,
+         notes)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)
+    """, (employee_id, year, month, day,
+          check_in1, check_out1, net_hours1,
+          check_in2, check_out2, net_hours2, net_hours_total,
+          notes))
     conn.commit()
     conn.close()
 
@@ -249,14 +277,15 @@ else:
 
 contract_hours = st.sidebar.number_input("عدد الساعات اليومية المتعاقد عليها", min_value=1, max_value=24, value=8, step=1)
 paid_leave_keyword = st.sidebar.text_input("كلمة الإجازة المدفوعة", value="إجازة مدفوعة")
-start_time_info = st.sidebar.selectbox("من الساعة (توجيهي فقط)", options=TIME_OPTIONS, index=9)  # 09:00 AM
-end_time_info = st.sidebar.selectbox("إلى الساعة (توجيهي فقط)", options=TIME_OPTIONS, index=17) # 05:00 PM
+start_time_info = st.sidebar.selectbox("من الساعة (توجيهي فقط)", options=TIME_OPTIONS, index=9)
+end_time_info = st.sidebar.selectbox("إلى الساعة (توجيهي فقط)", options=TIME_OPTIONS, index=17)
 
 st.markdown(f"**العمل المتعاقد عليه من {start_time_info} إلى {end_time_info} ({contract_hours} ساعة يومياً)**")
 
 workdays = get_workdays(year, month)
 attendance_df = get_attendance(selected_employee_id, year, month)
 
+# بناء جدول كامل بفترتين
 days_list = []
 for d in workdays:
     day_num = d.day
@@ -266,9 +295,11 @@ for d in workdays:
             'اليوم': day_num,
             'التاريخ': d.strftime("%Y-%m-%d"),
             'اسم اليوم': d.strftime("%A"),
-            'وقت الحضور': row.iloc[0]['check_in'] if pd.notna(row.iloc[0]['check_in']) else "",
-            'وقت الانصراف': row.iloc[0]['check_out'] if pd.notna(row.iloc[0]['check_out']) else "",
-            'صافي (ساعات)': row.iloc[0]['net_hours'] if pd.notna(row.iloc[0]['net_hours']) else 0.0,
+            'حضور 1': row.iloc[0]['check_in1'] if pd.notna(row.iloc[0]['check_in1']) else "",
+            'انصراف 1': row.iloc[0]['check_out1'] if pd.notna(row.iloc[0]['check_out1']) else "",
+            'حضور 2': row.iloc[0]['check_in2'] if pd.notna(row.iloc[0]['check_in2']) else "",
+            'انصراف 2': row.iloc[0]['check_out2'] if pd.notna(row.iloc[0]['check_out2']) else "",
+            'صافي (ساعات)': row.iloc[0]['net_hours_total'] if pd.notna(row.iloc[0]['net_hours_total']) else 0.0,
             'الملاحظات': row.iloc[0]['notes'] if pd.notna(row.iloc[0]['notes']) else ""
         })
     else:
@@ -276,15 +307,17 @@ for d in workdays:
             'اليوم': day_num,
             'التاريخ': d.strftime("%Y-%m-%d"),
             'اسم اليوم': d.strftime("%A"),
-            'وقت الحضور': "",
-            'وقت الانصراف': "",
+            'حضور 1': "",
+            'انصراف 1': "",
+            'حضور 2': "",
+            'انصراف 2': "",
             'صافي (ساعات)': 0.0,
             'الملاحظات': ""
         })
 
 df = pd.DataFrame(days_list)
 
-# عرض الجدول مع Selectbox للأوقات
+# عرض الجدول مع فترتين (للمدير فقط قابل للتعديل)
 if user['is_admin']:
     edited_df = st.data_editor(
         df,
@@ -292,31 +325,32 @@ if user['is_admin']:
             "اليوم": st.column_config.NumberColumn("اليوم", disabled=True),
             "التاريخ": st.column_config.TextColumn("التاريخ", disabled=True),
             "اسم اليوم": st.column_config.TextColumn("اسم اليوم", disabled=True),
-            "وقت الحضور": st.column_config.SelectboxColumn(
-                "وقت الحضور",
-                options=TIME_OPTIONS,
-                required=False
-            ),
-            "وقت الانصراف": st.column_config.SelectboxColumn(
-                "وقت الانصراف",
-                options=TIME_OPTIONS,
-                required=False
-            ),
+            "حضور 1": st.column_config.SelectboxColumn("حضور 1", options=TIME_OPTIONS, required=False),
+            "انصراف 1": st.column_config.SelectboxColumn("انصراف 1", options=TIME_OPTIONS, required=False),
+            "حضور 2": st.column_config.SelectboxColumn("حضور 2", options=TIME_OPTIONS, required=False),
+            "انصراف 2": st.column_config.SelectboxColumn("انصراف 2", options=TIME_OPTIONS, required=False),
             "صافي (ساعات)": st.column_config.NumberColumn("صافي (ساعات)", disabled=True, format="%.2f"),
             "الملاحظات": st.column_config.TextColumn("الملاحظات")
         },
         use_container_width=True,
         num_rows="fixed"
     )
-    # تحديث الصافي
+    # حساب الساعات لكل صف
     for idx, row in edited_df.iterrows():
-        net = calculate_net_hours(row["وقت الحضور"], row["وقت الانصراف"])
-        edited_df.at[idx, "صافي (ساعات)"] = net
+        net1 = calculate_net_hours(row["حضور 1"], row["انصراف 1"])
+        net2 = calculate_net_hours(row["حضور 2"], row["انصراف 2"])
+        total = net1 + net2
+        edited_df.at[idx, "صافي (ساعات)"] = total
     # حفظ البيانات
     delete_month_attendance(selected_employee_id, year, month)
     for _, row in edited_df.iterrows():
+        net1 = calculate_net_hours(row["حضور 1"], row["انصراف 1"])
+        net2 = calculate_net_hours(row["حضور 2"], row["انصراف 2"])
+        total = net1 + net2
         save_attendance(selected_employee_id, year, month, row["اليوم"],
-                        row["وقت الحضور"], row["وقت الانصراف"], row["صافي (ساعات)"], row["الملاحظات"])
+                        row["حضور 1"], row["انصراف 1"], net1,
+                        row["حضور 2"], row["انصراف 2"], net2, total,
+                        row["الملاحظات"])
     st.success("تم حفظ التغييرات")
 else:
     st.dataframe(df, use_container_width=True)
@@ -355,7 +389,7 @@ def color_rows(row):
     notes = str(row["الملاحظات"]) if pd.notna(row["الملاحظات"]) else ""
     if paid_leave_keyword in notes:
         return ["background-color: #fff3cd"] * len(row)
-    elif (row["وقت الحضور"] == "" or row["وقت الانصراف"] == "") and row["صافي (ساعات)"] == 0:
+    elif (row["حضور 1"] == "" and row["حضور 2"] == "") and row["صافي (ساعات)"] == 0:
         return ["background-color: #f8d7da"] * len(row)
     else:
         return [""] * len(row)
